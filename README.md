@@ -38,26 +38,21 @@ Windows Command Prompt over SSL using WinInet API
     
     Follow these steps.
     
-      1. Generate a Private key
-          openssl genrsa -out RSA_KEY 2048
+      1. openssl genrsa -out RSA_KEY 2048
 
-      2. Generate a Certificate Signing Request
-        openssl req -new -key RSA_KEY -out server.csr      
+      2. openssl req -new -key RSA_KEY -out server.csr      
   
-      3. Generate a Self-Signed certificate
-        openssl x509 -req -days 365 -in server.csr -signkey RSA_KEY -out SSL_CERT
+      3.openssl x509 -req -days 365 -in server.csr -signkey RSA_KEY -out SSL_CERT
 
       At this point you can supply both server.crt and server.key to zopher_s
       using the -k and -c options or continue to create cert.h and key.h using
       the DER formats.
 
-      4. Convert PEM files to DER
-        openssl x509 -in SSL_CERT -inform PEM -out SSL_CERT_DER -outform DER
-        openssl rsa -in RSA_KEY -inform PEM -out RSA_KEY_DER -outform DER
+      4. openssl x509 -in SSL_CERT -inform PEM -out SSL_CERT_DER -outform DER
+         openssl rsa -in RSA_KEY -inform PEM -out RSA_KEY_DER -outform DER
 
-      5. Convert DER files into C header files
-        xxd -i SSL_CERT_DER > cert.h
-        xxd -i RSA_KEY_DER > key.h
+      5. xxd -i SSL_CERT_DER > cert.h
+         xxd -i RSA_KEY_DER > key.h
        
        
   + Known issues
