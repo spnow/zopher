@@ -1,5 +1,5 @@
 /**
- * Copyright 2013 @cmpxchg8
+ * Copyright (c) 2013 @cmpxchg8
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -223,6 +223,8 @@ void get (void *arg) {
   
   while (!quit) 
   {
+    FD_ZERO (&fds);
+    
     WDEBUG ("GET: Waiting for events");
     
     #ifdef WINDOWS
@@ -240,21 +242,20 @@ void get (void *arg) {
       if (ret == 0) {
         FD_SET (tp[idx].sd, &fds);
         WSAEnumNetworkEvents (tp[idx].sd, lh[0], &ne);
+
+        if (ne.lNetworkEvents & FD_CLOSE) {
+          WDEBUG ("GET: socket closed %i", GetLastError());
+          break;
+        }
       }
       
       WSAEventSelect (tp[idx].sd, lh[0], 0);
       ioctlsocket (tp[idx].sd, FIONBIO, &off);
-    
-      if (ne.lNetworkEvents & FD_CLOSE) {
-        WDEBUG ("GET: socket closed");
-        break;
-      }
-      
+        
       if (ret == 1) {
         FD_SET (0, &fds);
       }
     #else
-      FD_ZERO (&fds);
       FD_SET (tp[idx].sd, &fds);
       FD_SET (0, &fds);
 
@@ -309,9 +310,11 @@ void get (void *arg) {
       }
     }
   }
+  #ifdef WINDOWS
+    CloseHandle (lh[0]);
+  #endif
   WDEBUG ("GET: Ending thread.");
   pthread_mutex_lock (&m);
-  threads--;
   pthread_cond_signal (&cv);
   pthread_mutex_unlock (&m);
   pthread_exit (NULL);
@@ -322,14 +325,9 @@ void get (void *arg) {
  *  Data received is written to stdout
  **********************************************************************/
 void post (void *arg) {
-#ifdef WINDOWS
-  WSANETWORKEVENTS ne;
-  HANDLE           e;
-  u_long           off=0;
-#endif
-  fd_set           fds;
-  int              idx, len, ret;
-  char             buf[BUFSIZ];
+  fd_set fds;
+  int    idx, len, ret;
+  char   buf[BUFSIZ];
   
   idx = (tp[0].ctx == GET_CTX) ? 1 : 0;
   
@@ -337,54 +335,20 @@ void post (void *arg) {
   pthread_barrier_wait (&b);
   WDEBUG ("POST: Running");
   
-  #ifdef WINDOWS
-    e = (HANDLE)WSACreateEvent ();
-  #endif
-  
   while (1) 
   {
     WDEBUG ("POST: Waiting for events.");
     FD_ZERO (&fds);
-    
-    #ifdef WINDOWS  
-      ret = WSAEventSelect (tp[idx].sd, e, FD_READ | FD_CLOSE);
-      if (ret == SOCKET_ERROR) 
-      {
-        WDEBUG ("WSAEventSelect() error");
-        break;
-      }
-      ret = WaitForSingleObject (e, INFINITE) - WAIT_OBJECT_0;
+    FD_SET (tp[idx].sd, &fds);
       
-      if (ret != 0) 
-      {
-        WDEBUG ("WaitForSingleObject() error");
-        break;
-      }
-
-      FD_SET (tp[idx].sd, &fds);
-      WSAEnumNetworkEvents (tp[idx].sd, e, &ne);
+    if (select (FD_SETSIZE, &fds, NULL, NULL, NULL) == -1) 
+    {
+      WDEBUG ("POST: select() error");
+      break;
+    }
      
-      WSAEventSelect (tp[idx].sd, e, 0);
-      ioctlsocket (tp[idx].sd, FIONBIO, &off);
-      
-      if (ne.lNetworkEvents & FD_CLOSE) 
-      {
-        WDEBUG ("POST: socket closed");
-        break;
-      }
-    #else
-      FD_SET (tp[idx].sd, &fds);
-      
-      if (select (FD_SETSIZE, &fds, NULL, NULL, NULL) == -1) 
-      {
-        WDEBUG ("POST: select() error");
-        break;
-      }
-    #endif
-    
     WDEBUG ("POST: Received event");
     
-    // socket event?
     if (FD_ISSET(tp[idx].sd, &fds)) 
     {
       WDEBUG ("POST: socket event");      
@@ -402,7 +366,7 @@ void post (void *arg) {
       if (len > 0) 
       {
         WDEBUG ("POST: Writing data to stdout");
-        write (fileno(stdout), buf, len);
+        write (1, buf, len);
       } else if (len == 0) {
         WDEBUG ("POST: socket closed");
         break;
@@ -412,9 +376,9 @@ void post (void *arg) {
       }
     }
   }
+
   WDEBUG ("POST: Ending thread.");
   pthread_mutex_lock (&m);
-  threads--;
   pthread_cond_signal (&cv);
   pthread_mutex_unlock (&m);
   pthread_exit (NULL);
@@ -422,14 +386,15 @@ void post (void *arg) {
 
 /**********************************************************************
  *  Handle signals from operating system and user such as CTRL+C
+ *  Make sure we send "exit" from GET thread to terminate remote process
  **********************************************************************/
 int sig (int code) 
 {
+  printf ("signal received %i", code);
   #ifdef WINDOWS
     if (code != CTRL_C_EVENT) return 0;
     SetEvent ((HANDLE)pfd[0]);
   #else
-    WDEBUG ("signal received %i", code);
     write (pfd[1], ".", 1);
   #endif
   pthread_mutex_lock (&m);
@@ -483,7 +448,7 @@ int get_ssl_error (SSL *ssl, int ret)
 
 /**
  *
- * intialize inbound connection
+ * initialize inbound connection
  *
  */
 int init_request (int sd) {
@@ -543,6 +508,7 @@ int init_request (int sd) {
         pthread_create (&tp[idx].id, 0, 
             (void*)(i == 0 ? get : post), (void*)NULL);
         status++;
+        break;
       }
     }
   } else {
@@ -731,7 +697,7 @@ void zopher_server (char address[], char cert[], char key[]) {
             pthread_mutex_lock (&m);
             pthread_cond_wait (&cv, &m);
             pthread_mutex_unlock (&m);
-          
+
             #ifdef WINDOWS
               // Unblock any pending reads in GET thread.
               // Crude? Yes.. but easier than anything else
@@ -739,7 +705,7 @@ void zopher_server (char address[], char cert[], char key[]) {
               // so it doesn't matter much :)
               CloseHandle (GetStdHandle (STD_INPUT_HANDLE));
             #endif
-            
+
             for (i = 0; i < MAX_CONNECTION; i++) 
             {
               if (tp[i].ssl != NULL)
@@ -852,7 +818,7 @@ void list_interfaces(void) {
     }
   }
 #ifdef WINDOWS
-  WSACleanup();
+  WSACleanup ();
 #endif
 }
 
@@ -860,7 +826,7 @@ void list_interfaces(void) {
  *  Accepts data in POST request by remote WinInet HTTP client
  *  Data received is written to stdout
  **********************************************************************/
-void usage(char argv[]) {
+void usage (char argv[]) {
   
   fprintf (stdout, 
       "\n  Usage: %s <host> [options]\n"
